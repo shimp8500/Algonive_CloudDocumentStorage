@@ -5,7 +5,7 @@ import React, { useState, useEffect, useCallback } from "react";
 // Replace with your actual Supabase URL and anon key
 const SUPABASE_URL = 'https://mrgydkfteuduanauupok.supabase.co';
 // Ensure this key is safe to be exposed on the client-side (anon public key)
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1yZ3lka2Z0ZXVkdWFuYXV1cG9rIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTI4NTI3MzQsImV4cCI6MjA2ODQyODczNH0.8slzpX0PvcPEXy8mqJZwJushmi9_kocGRt9-fot2aVk'; // Corrected typo: exY3Ai to exp
+const SUPABASE_ANON_KEY = 'Input_Your_API_Key'; // Corrected typo:   //# input your API key
 
 // Cloudinary upload preset (replace with your own if different)
 const CLOUDINARY_UPLOAD_PRESET = "docs_unsigned";
