@@ -1,27 +1,19 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
-import {
-  getFirestore,
-  collection,
-  addDoc,
-  serverTimestamp,
-  onSnapshot,
-  doc,
-  getDoc,
-  setDoc,
-  updateDoc,
-  arrayUnion,
-  arrayRemove,
-  deleteDoc,
-  query,
-  where
-} from "firebase/firestore";
+// Removed: import { createClient } from '@supabase/supabase-js'; // Will load from CDN
+
+// Supabase Configuration
+// Replace with your actual Supabase URL and anon key
+const SUPABASE_URL = 'https://mrgydkfteuduanauupok.supabase.co';
+// Ensure this key is safe to be exposed on the client-side (anon public key)
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1yZ3lka2Z0ZXVkdWFuYXV1cG9rIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTI4NTI3MzQsImV4cCI6MjA2ODQyODczNH0.8slzpX0PvcPEXy8mqJZwJushmi9_kocGRt9-fot2aVk'; // Corrected typo: exY3Ai to exp
 
 // Cloudinary upload preset (replace with your own if different)
 const CLOUDINARY_UPLOAD_PRESET = "docs_unsigned";
 // Cloudinary cloud name (replace with your own if different)
 const CLOUDINARY_CLOUD_NAME = "dbj9qw0co";
+
+// Supabase client will be initialized inside useEffect after CDN loads
+let supabase = null;
 
 function App() {
   const [file, setFile] = useState(null);
@@ -30,74 +22,120 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
   const [showModal, setShowModal] = useState(false);
-  const [db, setDb] = useState(null);
-  const [auth, setAuth] = useState(null);
   const [userId, setUserId] = useState(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
   const [sharingDoc, setSharingDoc] = useState(null);
   const [shareeUserId, setShareeUserId] = useState("");
 
-  // Initialize Firebase and handle authentication
+  // Initialize Supabase Auth and handle user ID
   useEffect(() => {
-    try {
-      const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-      const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+    // Check if Supabase client is available from CDN
+    if (window.supabase && !supabase) {
+      supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+      console.log("Supabase client initialized from CDN.");
+    }
 
-      if (Object.keys(firebaseConfig).length === 0) {
-        console.error("Firebase config is missing. Please ensure __firebase_config is provided.");
-        setMessage("Firebase configuration is missing. Cannot initialize app.");
+    const setupAuth = async () => {
+      if (!supabase) {
+        console.error("Supabase client not initialized.");
+        setMessage("Supabase client not ready. Please ensure CDN loaded correctly.");
         setShowModal(true);
         setLoading(false);
         return;
       }
 
-      const app = initializeApp(firebaseConfig);
-      const firestoreDb = getFirestore(app);
-      const firebaseAuth = getAuth(app);
+      try {
+        // Attempt to get the current session
+        const { data: { session }, error } = await supabase.auth.getSession();
 
-      setDb(firestoreDb);
-      setAuth(firebaseAuth);
+        if (error) {
+          console.error("Supabase Auth: Error getting session:", error.message);
+          setMessage(`Authentication error: ${error.message}`);
+          setShowModal(true);
+        }
 
-      const unsubscribeAuth = onAuthStateChanged(firebaseAuth, async (user) => {
-        if (user) {
-          setUserId(user.uid);
-          console.log("Firebase Auth: User signed in with UID:", user.uid);
+        if (session) {
+          setUserId(session.user.id);
+          console.log("Supabase Auth: User signed in with UID:", session.user.id);
         } else {
-          console.log("Firebase Auth: No user signed in, attempting anonymous sign-in.");
-          try {
-            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-              await signInWithCustomToken(firebaseAuth, __initial_auth_token);
-              console.log("Firebase Auth: Signed in with custom token.");
+          console.log("Supabase Auth: No user session found, attempting anonymous sign-in.");
+          // Supabase's signInAnonymously creates a user in auth.users
+          const { data, error: signInError } = await supabase.auth.signInAnonymously();
+          if (signInError) {
+            console.error("Supabase Auth: Error during anonymous sign-in:", signInError.message);
+            // Specifically check for the "Anonymous sign-ins are disabled" message
+            if (signInError.message.includes("Anonymous sign-ins are disabled")) {
+              setMessage("Anonymous sign-ins are disabled in your Supabase project. Please enable it in your Supabase project settings under 'Authentication' -> 'Settings' to allow document uploads and sharing. Until then, the app's full functionality will be limited.");
             } else {
-              await signInAnonymously(firebaseAuth);
-              console.log("Firebase Auth: Signed in anonymously.");
+              setMessage(`Authentication failed: ${signInError.message}`);
             }
-          } catch (error) {
-            console.error("Firebase Auth: Error during sign-in:", error.message);
-            setMessage(`Authentication failed: ${error.message}`);
             setShowModal(true);
+            setUserId(null); // Ensure userId is null if auth fails
+          } else if (data.user) {
+            setUserId(data.user.id);
+            console.log("Supabase Auth: Signed in anonymously with UID:", data.user.id);
           }
         }
+      } catch (error) {
+        console.error("Supabase initialization error:", error.message);
+        setMessage(`Supabase initialization failed: ${error.message}`);
+        setShowModal(true);
+      } finally {
         setIsAuthReady(true);
         setLoading(false);
-      });
+      }
+    };
 
-      return () => unsubscribeAuth();
-    } catch (error) {
-      console.error("Firebase initialization error:", error.message);
-      setMessage(`Firebase initialization failed: ${error.message}`);
-      setShowModal(true);
-      setLoading(false);
+    // Only run setupAuth if Supabase client is available
+    if (supabase) {
+      setupAuth();
+    } else {
+      // If not available immediately, wait for the script to load
+      const script = document.createElement('script');
+      script.src = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2";
+      script.onload = () => {
+        supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+        console.log("Supabase client initialized after CDN script loaded.");
+        setupAuth();
+      };
+      script.onerror = (e) => {
+        console.error("Failed to load Supabase CDN script:", e);
+        setMessage("Failed to load Supabase library. Check your internet connection or CDN link.");
+        setShowModal(true);
+        setLoading(false);
+      };
+      document.head.appendChild(script);
     }
+
+
+    // Supabase real-time auth state listener
+    // This listener needs to be set up after supabase client is guaranteed to be initialized
+    let authListenerSubscription;
+    if (supabase) {
+        const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
+            console.log('Supabase Auth State Change:', event, session);
+            if (session) {
+                setUserId(session.user.id);
+            } else {
+                // User logged out or session expired.
+                // For this app, we'll try to re-authenticate anonymously.
+                setupAuth();
+            }
+        });
+        authListenerSubscription = authListener.subscription;
+    }
+
+
+    return () => {
+      if (authListenerSubscription) {
+        authListenerSubscription.unsubscribe();
+      }
+    };
   }, []);
 
-  // Helper to get the correct collection path
-  const getDocumentsCollectionRef = useCallback(() => {
-    if (!db || !userId) return null;
-    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-    // Store public data under /artifacts/{appId}/public/data/documents
-    return collection(db, `artifacts/${appId}/public/data/documents`);
-  }, [db, userId]);
+
+  // Helper to get the correct table name
+  const DOCUMENTS_TABLE = 'documents';
 
   // Upload to Cloudinary
   const uploadToCloudinary = async (fileToUpload) => {
@@ -136,7 +174,7 @@ function App() {
       setShowModal(true);
       return;
     }
-    if (!db || !userId) {
+    if (!userId || !supabase) { // userId must be set from Supabase Auth and supabase client must be ready
       setMessage("App not fully initialized. Please wait.");
       setShowModal(true);
       return;
@@ -147,20 +185,28 @@ function App() {
       const uploadedUrl = await uploadToCloudinary(file);
       setUrl(uploadedUrl);
 
-      const docRef = await addDoc(getDocumentsCollectionRef(), {
-        fileName: file.name,
-        url: uploadedUrl,
-        uploadedAt: serverTimestamp(),
-        ownerId: userId, // Store the ID of the user who uploaded the document
-        sharedWith: [], // Array of user IDs this document is shared with
-      });
+      // Supabase: Insert a new row into the 'documents' table
+      const { data, error } = await supabase
+        .from(DOCUMENTS_TABLE)
+        .insert([
+          {
+            filename: file.name,
+            url: uploadedUrl,
+            uploadedat: new Date().toISOString(), // Changed from uploadedAt to uploadedat
+            ownerid: userId,
+            sharedwith: [],
+          },
+        ])
+        .select(); // Select the inserted data to get the ID
 
-      console.log("✅ Firestore Save Success, ID:", docRef.id);
+      if (error) throw error;
+
+      console.log("✅ Supabase Save Success, Data:", data);
       setFile(null);
       setMessage("Document uploaded successfully!");
       setShowModal(true);
     } catch (error) {
-      console.error("❌ Firestore Save Failed:", error.message);
+      console.error("❌ Supabase Save Failed:", error.message);
       setMessage(`Failed to save document: ${error.message}`);
       setShowModal(true);
     } finally {
@@ -168,59 +214,62 @@ function App() {
     }
   };
 
-  // Real-time Firestore listener for documents owned by or shared with the current user
+  // Real-time Supabase listener for documents
   useEffect(() => {
-    if (!db || !userId || !isAuthReady) return;
+    if (!userId || !isAuthReady || !supabase) return; // Ensure supabase client is ready
 
-    const documentsCollectionRef = getDocumentsCollectionRef();
-    if (!documentsCollectionRef) return;
+    // Supabase Realtime Subscription
+    // This subscribes to all changes in the 'documents' table.
+    // Row Level Security (RLS) in Supabase will ensure users only see documents
+    // they are allowed to see based on your RLS policies.
+    const channel = supabase
+      .channel('public:documents') // Use a unique channel name
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: DOCUMENTS_TABLE },
+        (payload) => {
+          console.log('Change received!', payload);
+          // When a change occurs, re-fetch all documents.
+          fetchDocuments();
+        }
+      )
+      .subscribe();
 
-    // Create a query that listens for documents owned by the current user
-    // OR documents where the current user's ID is in the 'sharedWith' array.
-    // Firestore does not directly support OR queries across different fields.
-    // We'll fetch all public documents and filter them client-side for simplicity,
-    // or use two separate listeners and merge the results.
-    // For a more scalable solution, consider denormalizing data or using Cloud Functions.
+    const fetchDocuments = async () => {
+      // Supabase: Fetch documents. RLS policies will filter this on the server.
+      const { data, error } = await supabase
+        .from(DOCUMENTS_TABLE)
+        .select('*');
 
-    // For now, let's just listen to all documents in the public collection
-    // and filter client-side for display. This might become inefficient with many documents.
-    // A better approach for "sharedWith" would be to create a subcollection or a separate
-    // collection for shared documents, or use two separate queries.
-
-    // For simplicity, we'll fetch all documents and filter for owner or shared access.
-    // Note: This approach might fetch more data than necessary if there are many public documents.
-    const unsubscribe = onSnapshot(
-      documentsCollectionRef,
-      (snapshot) => {
-        const docsData = snapshot.docs
-          .map((docSnap) => ({
-            id: docSnap.id,
-            ...docSnap.data(),
-          }))
-          .filter(docItem => {
-            // Only show documents owned by the current user or shared with the current user
-            return docItem.ownerId === userId || (docItem.sharedWith && docItem.sharedWith.includes(userId));
-          });
-        setDocs(docsData);
-        console.log("Updated documents:", docsData);
-      },
-      (error) => {
-        console.error("❌ Firestore snapshot error:", error.message);
+      if (error) {
+        console.error("❌ Supabase fetch error:", error.message);
         setMessage(`Error fetching documents: ${error.message}`);
         setShowModal(true);
+        return;
       }
-    );
 
-    return () => unsubscribe();
-  }, [db, userId, isAuthReady, getDocumentsCollectionRef]);
+      // Client-side filtering as a fallback/for clarity, though RLS should handle it.
+      const filteredDocs = data.filter(docItem =>
+        docItem.ownerid === userId || (docItem.sharedwith && docItem.sharedwith.includes(userId))
+      );
 
-  const handleDeleteDoc = async (docId, ownerId) => {
-    if (!db || !userId) {
+      setDocs(filteredDocs);
+      console.log("Updated documents:", filteredDocs);
+    };
+
+    fetchDocuments(); // Initial fetch when component mounts or userId/auth status changes
+
+    return () => {
+      channel.unsubscribe(); // Clean up subscription
+    };
+  }, [userId, isAuthReady, supabase]); // Re-run if userId, auth readiness, or supabase client changes
+
+  const handleDeleteDoc = async (docId, ownerid) => {
+    if (!userId || !supabase) {
       setMessage("App not fully initialized. Please wait.");
       setShowModal(true);
       return;
     }
-    if (ownerId !== userId) {
+    if (ownerid !== userId) {
       setMessage("You can only delete documents you own.");
       setShowModal(true);
       return;
@@ -228,8 +277,15 @@ function App() {
 
     setLoading(true);
     try {
-      const docRef = doc(getDocumentsCollectionRef(), docId);
-      await deleteDoc(docRef);
+      // Supabase: Delete a row
+      const { error } = await supabase
+        .from(DOCUMENTS_TABLE)
+        .delete()
+        .eq('id', docId) // Condition to delete the specific document
+        .eq('ownerid', userId); // Ensure only owner can delete (additional client-side check)
+
+      if (error) throw error;
+
       setMessage("Document deleted successfully!");
       setShowModal(true);
     } catch (error) {
@@ -247,12 +303,12 @@ function App() {
   };
 
   const handleShareDocument = async () => {
-    if (!db || !userId || !sharingDoc || !shareeUserId.trim()) {
+    if (!userId || !sharingDoc || !shareeUserId.trim() || !supabase) {
       setMessage("Invalid sharing details.");
       setShowModal(true);
       return;
     }
-    if (sharingDoc.ownerId !== userId) {
+    if (sharingDoc.ownerid !== userId) {
       setMessage("You can only share documents you own.");
       setShowModal(true);
       return;
@@ -265,11 +321,30 @@ function App() {
 
     setLoading(true);
     try {
-      const docRef = doc(getDocumentsCollectionRef(), sharingDoc.id);
-      await updateDoc(docRef, {
-        sharedWith: arrayUnion(shareeUserId.trim()),
-      });
-      setMessage(`Document '${sharingDoc.fileName}' shared with '${shareeUserId.trim()}' successfully!`);
+      // Supabase: Update the 'sharedwith' array
+      // Fetch current document to get the existing sharedwith array
+      const { data: currentDoc, error: fetchError } = await supabase
+        .from(DOCUMENTS_TABLE)
+        .select('sharedwith')
+        .eq('id', sharingDoc.id)
+        .single(); // Expect a single row
+
+      if (fetchError) throw fetchError;
+
+      const currentShareWith = currentDoc?.sharedwith || [];
+      // Ensure the shareeUserId is a valid UUID for the database schema
+      // In a real app, you'd validate if shareeUserId exists in auth.users
+      const updatedShareWith = [...new Set([...currentShareWith, shareeUserId.trim()])];
+
+      const { error: updateError } = await supabase
+        .from(DOCUMENTS_TABLE)
+        .update({ sharedwith: updatedShareWith })
+        .eq('id', sharingDoc.id)
+        .eq('ownerid', userId); // Ensure owner is updating
+
+      if (updateError) throw updateError;
+
+      setMessage(`Document '${sharingDoc.filename}' shared with '${shareeUserId.trim()}' successfully!`);
       setShowModal(true);
       setSharingDoc(null); // Close sharing modal
       setShareeUserId("");
@@ -282,13 +357,13 @@ function App() {
     }
   };
 
-  const handleRevokeAccess = async (docId, ownerId, userToRevoke) => {
-    if (!db || !userId) {
+  const handleRevokeAccess = async (docId, ownerid, userToRevoke) => {
+    if (!userId || !supabase) {
       setMessage("App not fully initialized. Please wait.");
       setShowModal(true);
       return;
     }
-    if (ownerId !== userId) {
+    if (ownerid !== userId) {
       setMessage("You can only revoke access for documents you own.");
       setShowModal(true);
       return;
@@ -296,11 +371,28 @@ function App() {
 
     setLoading(true);
     try {
-      const docRef = doc(getDocumentsCollectionRef(), docId);
-      await updateDoc(docRef, {
-        sharedWith: arrayRemove(userToRevoke),
-      });
-      setMessage(`Access revoked for '${userToRevoke}' on document '${docs.find(d => d.id === docId)?.fileName}'.`);
+      // Supabase: Revoke access by removing from 'sharedwith' array
+      // Fetch current document to get the existing sharedwith array
+      const { data: currentDoc, error: fetchError } = await supabase
+        .from(DOCUMENTS_TABLE)
+        .select('sharedwith')
+        .eq('id', docId)
+        .single(); // Expect a single row
+
+      if (fetchError) throw fetchError;
+
+      const currentShareWith = currentDoc?.sharedwith || [];
+      const updatedShareWith = currentShareWith.filter(id => id !== userToRevoke);
+
+      const { error: updateError } = await supabase
+        .from(DOCUMENTS_TABLE)
+        .update({ sharedwith: updatedShareWith })
+        .eq('id', docId)
+        .eq('ownerid', userId); // Ensure owner is updating
+
+      if (updateError) throw updateError;
+
+      setMessage(`Access revoked for '${userToRevoke}' on document '${docs.find(d => d.id === docId)?.filename}'.`);
       setShowModal(true);
     } catch (error) {
       console.error("❌ Error revoking access:", error.message);
@@ -333,9 +425,9 @@ function App() {
   const SharingModal = ({ doc, onClose, onShare, shareeUserId, setShareeUserId }) => {
     if (!doc) return null;
     return (
-      <div className="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50">
+      <div className="fixed inset-0 bg-gray-600 bg-opacity50 flex items-center justify-center z-50">
         <div className="bg-white p-6 rounded-lg shadow-xl max-w-md w-full">
-          <h3 className="text-xl font-bold mb-4">Share Document: {doc.fileName}</h3>
+          <h3 className="text-xl font-bold mb-4">Share Document: {doc.filename}</h3>
           <div className="mb-4">
             <label htmlFor="shareeId" className="block text-gray-700 text-sm font-bold mb-2">
               Share with User ID:
@@ -346,7 +438,7 @@ function App() {
               className="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
               value={shareeUserId}
               onChange={(e) => setShareeUserId(e.target.value)}
-              placeholder="Enter User ID"
+              placeholder="Enter User ID (UUID)"
             />
           </div>
           <div className="flex justify-end gap-2">
@@ -363,20 +455,22 @@ function App() {
               Share
             </button>
           </div>
-          {doc.sharedWith && doc.sharedWith.length > 0 && (
+          {doc.sharedwith && doc.sharedwith.length > 0 && (
             <div className="mt-4 border-t pt-4">
               <h4 className="font-semibold mb-2">Currently Shared With:</h4>
               <ul>
-                {doc.sharedWith.map((sharedId, index) => (
+                {doc.sharedwith.map((sharedId, index) => (
                   <li key={index} className="flex items-center justify-between text-sm py-1">
                     <span>{sharedId}</span>
-                    {doc.ownerId === userId && ( // Only owner can revoke
-                      <button
-                        onClick={() => handleRevokeAccess(doc.id, doc.ownerId, sharedId)}
-                        className="ml-2 bg-red-500 hover:bg-red-600 text-white text-xs py-1 px-2 rounded-md transition duration-300"
-                      >
-                        Revoke
-                      </button>
+                    {doc.ownerid === userId && (
+                      <div className="flex items-center">
+                        <button
+                          onClick={() => handleRevokeAccess(doc.id, doc.ownerid, sharedId)}
+                          className="ml-2 bg-red-500 hover:bg-red-600 text-white text-xs py-1 px-2 rounded-md transition duration-300"
+                        >
+                          Revoke
+                        </button>
+                      </div>
                     )}
                   </li>
                 ))}
@@ -399,6 +493,8 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gray-100 p-4 sm:p-6 font-sans flex flex-col items-center">
+      {/* Supabase CDN script */}
+      <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
       <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet" />
       <script src="https://cdn.tailwindcss.com"></script>
 
@@ -486,11 +582,11 @@ function App() {
                     rel="noopener noreferrer"
                     className="text-blue-600 hover:underline font-medium text-lg flex-grow break-all mb-2 sm:mb-0"
                   >
-                    {docItem.fileName}
+                    {docItem.filename}
                   </a>
                   <div className="flex flex-wrap gap-2 sm:ml-4">
-                    {docItem.ownerId === userId && (
-                      <>
+                    {docItem.ownerid === userId && (
+                      <div className="flex flex-wrap gap-2">
                         <button
                           onClick={() => handleShareClick(docItem)}
                           className="bg-purple-500 hover:bg-purple-600 text-white text-sm py-1 px-3 rounded-md transition duration-300"
@@ -498,15 +594,15 @@ function App() {
                           Share
                         </button>
                         <button
-                          onClick={() => handleDeleteDoc(docItem.id, docItem.ownerId)}
+                          onClick={() => handleDeleteDoc(docItem.id, docItem.ownerid)}
                           className="bg-red-500 hover:bg-red-600 text-white text-sm py-1 px-3 rounded-md transition duration-300"
                         >
                           Delete
                         </button>
-                      </>
+                      </div>
                     )}
-                    {docItem.ownerId !== userId && (
-                      <span className="text-gray-500 text-sm italic">Shared by: {docItem.ownerId}</span>
+                    {docItem.ownerid !== userId && (
+                      <span className="text-gray-500 text-sm italic">Shared by: {docItem.ownerid}</span>
                     )}
                   </div>
                 </li>
